@@ -6,6 +6,30 @@ const hostOK=h=>['maps.app.goo.gl','maps.google.com','www.google.com','google.co
 async function resolveGoogle(input){if(!input)return '';try{let u=new URL(input);if(u.protocol!=='https:'||!hostOK(u.hostname))return '';for(let i=0;i<5;i++){let res=await fetch(u.href,{redirect:'manual',signal:AbortSignal.timeout(4500)});if(![301,302,303,307,308].includes(res.status))break;let v=new URL(res.headers.get('location'),u);if(v.protocol!=='https:'||!hostOK(v.hostname))break;u=v;}return u.href}catch{return ''}}
 function parseGoogle(url){if(!url)return {name:'',lat:null,lng:null};let u=new URL(url);let m=u.pathname.match(/\/place\/([^/]+)/);let name=m?decodeURIComponent(m[1].replace(/\+/g,' ')):u.searchParams.get('query')||'';let coords=url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);return {name,lat:coords?Number(coords[1]):null,lng:coords?Number(coords[2]):null};}
 async function googlePlaces(name,address){let key=process.env.GOOGLE_PLACES_API_KEY;if(!key)return null;let q=[name,address].filter(Boolean).join(' ');let res=await fetch('https://places.googleapis.com/v1/places:searchText',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':key,'X-Goog-FieldMask':'places.id,places.displayName,places.formattedAddress,places.location'},body:JSON.stringify({textQuery:q,languageCode:'zh-TW',regionCode:'TW',pageSize:5}),signal:AbortSignal.timeout(8500)});if(!res.ok)throw Error('Google Places 查詢未成功（請檢查 API 設定）');let data=await res.json();return (data.places||[]).map(p=>({name:p.displayName?.text||'',address:p.formattedAddress||'',lat:p.location?.latitude,lng:p.location?.longitude,placeId:p.id})).filter(p=>Number.isFinite(p.lat)&&Number.isFinite(p.lng));}
-async function osmSearch(name,address){let queries=[address,[name,address].filter(Boolean).join(' '),name].filter(Boolean);let result=[];for(const q of [...new Set(queries)]){try{let url='https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&countrycodes=tw&accept-language=zh-TW&q='+encodeURIComponent(q);let res=await fetch(url,{headers:{'User-Agent':'FoodMapPrototype/1.0 (personal restaurant mapping prototype)','Accept':'application/json'},signal:AbortSignal.timeout(6000)});if(!res.ok)continue;let arr=await res.json();result.push(...arr.map(p=>({name:p.name||p.display_name?.split(',')[0]||'',address:p.display_name||'',lat:Number(p.lat),lng:Number(p.lon)})));if(result.length)break}catch{}}return result;}
+// Respect the public Nominatim service's low-volume usage policy: at most one request per second.
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function addressVariants(address){
+ const a=clean(address).replace(/臺/g,'台').replace(/\s+/g,'').replace(/(?:高雄市|台北市|新北市|台中市|台南市|桃園市)([^縣市區鄉鎮]{1,6}區)([^里]{1,10}里)/,'$&');
+ const noVillage=a.replace(/([區鄉鎮市])[^區鄉鎮市]{1,10}里(?=[^里]*?(?:路|街|大道))/,'$1');
+ const withoutCountry=noVillage.replace(/^台灣(?:省)?/,'');
+ return [...new Set([a,noVillage,withoutCountry].filter(Boolean))];
+}
+async function osmSearch(name,address){
+ const addresses=addressVariants(address);
+ const queries=[...addresses,[name,addresses.at(-1)].filter(Boolean).join(' '),name].filter(Boolean);
+ const result=[];let count=0;
+ for(const q of [...new Set(queries)].slice(0,4)){
+  if(count>0)await sleep(1150);count++;
+  try{
+   const url='https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&countrycodes=tw&accept-language=zh-TW&q='+encodeURIComponent(q);
+   const res=await fetch(url,{headers:{'User-Agent':'FoodMapPersonal/2.0 (Netlify hosted personal mapping app)','Accept':'application/json'},signal:AbortSignal.timeout(6500)});
+   if(!res.ok)continue;
+   const arr=await res.json();
+   result.push(...arr.map(p=>({name:p.name||p.display_name?.split(',')[0]||'',address:p.display_name||'',lat:Number(p.lat),lng:Number(p.lon)})));
+   if(result.length)break;
+  }catch{}
+ }
+ return result;
+}
 function pick(candidates,name,address){let n=norm(name),a=norm(address),number=roadNumber(address);let scored=candidates.map(p=>{let pn=norm(p.name),pa=norm(p.address);let nameMatch=n&&pn&&(pn.includes(n)||n.includes(pn));let numberMatch=number&&pa.includes(number);let addressMatch=a&&pa&&(pa.includes(a)||a.includes(pa));let score=(nameMatch?3:0)+(numberMatch?4:0)+(addressMatch?3:0);return {...p,score}}).sort((a,b)=>b.score-a.score);if(scored[0]?.score>=4&&(!scored[1]||scored[0].score>scored[1].score))return {status:'matched',place:scored[0]};return {status:'candidates',candidates:scored.slice(0,5)};}
 exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}if(!candidates)candidates=await osmSearch(name,address);let result=pick(candidates,name,address);return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
