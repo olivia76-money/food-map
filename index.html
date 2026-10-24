@@ -59,6 +59,7 @@ async function inspectLink(e){
   const status=data.name?'已展開 Google Maps 網址並擷取地點名稱；地址與地圖位置仍需核對。':'已展開網址，但尚無法確認店名；請補充資訊或查詢公開地圖。';
   showLinkForm(status);
   if(data.address){document.getElementById('linkedAddress').value=data.address}
+  if(data.suggestedCoordinates){showGoogleCoordinateSuggestion(data.suggestedCoordinates,'placeResults','linkedLat','linkedLng');}
   if(data.verified===true && Number.isFinite(data.lat)&&Number.isFinite(data.lng)){
    document.getElementById('linkedLat').value=data.lat;document.getElementById('linkedLng').value=data.lng;
   }
@@ -142,6 +143,20 @@ function editRestaurant(id){
 }
 function toggleEditCuisine(btn){const input=document.getElementById('editCuisine');if(!input)return;const c=btn.dataset.cuisine;const items=input.value.split(/[、,，]/).map(x=>x.trim()).filter(Boolean);input.value=(items.includes(c)?items.filter(x=>x!==c):[...items,c]).join('、');refreshEditCuisineChoices()}
 function refreshEditCuisineChoices(){const input=document.getElementById('editCuisine');if(!input)return;const chosen=input.value.split(/[、,，]/).map(x=>x.trim());document.querySelectorAll('#editCuisineChoices button').forEach(b=>{const active=chosen.includes(b.dataset.cuisine);b.style.background=active?'#dcefe9':'';b.style.borderColor=active?'#16876b':'';b.setAttribute('aria-pressed',String(active))})}
+function showGoogleCoordinateSuggestion(coords,holderId,latId,lngId){
+ const holder=document.getElementById(holderId);if(!holder||!coords)return;
+ const lat=Number(coords.lat),lng=Number(coords.lng);
+ if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat<21||lat>26||lng<119||lng>123)return;
+ const label=lat.toFixed(6)+', '+lng.toFixed(6);
+ const url='https://www.openstreetmap.org/?mlat='+encodeURIComponent(lat)+'&mlon='+encodeURIComponent(lng)+'#map=18/'+encodeURIComponent(lat)+'/'+encodeURIComponent(lng);
+ const wrap=document.createElement('div');wrap.className='banner';
+ const heading=document.createElement('b');heading.textContent='Google Maps 連結包含一組尚未驗證的座標';wrap.appendChild(heading);
+ const detail=document.createElement('p');detail.className='mini';detail.textContent='座標：'+label+'。可能是餐廳位置，也可能是地圖視角。請先開啟地圖核對，確定圖釘位置正確後才能使用。';wrap.appendChild(detail);
+ const link=document.createElement('a');link.href=url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='🔎 開啟地圖核對座標';wrap.appendChild(link);
+ const btn=document.createElement('button');btn.type='button';btn.className='soft';btn.style.marginLeft='8px';btn.textContent='我已核對，使用此座標';
+ btn.onclick=()=>{const a=document.getElementById(latId),b=document.getElementById(lngId);if(!a||!b)return;a.value=lat;b.value=lng;window.manualPicked=true;btn.disabled=true;btn.textContent='已採用，請儲存變更';};wrap.appendChild(btn);
+ holder.prepend(wrap);
+}
 async function searchEditPlace(id){
  const r=db.restaurants.find(x=>x.id===id);if(!r)return;
  const name=document.querySelector('input[name="name"]')?.value||r.name;
@@ -168,6 +183,7 @@ async function searchEditPlace(id){
   }else{
    box.innerHTML='無法可靠確認位置，<b>不會使用猜測座標</b>。'+(data.reason==='no_results'?'公開地圖查無此門牌或店名。':'找到的資料不足以核對完整門牌。')+(data.diagnostics?.serviceError?' 部分免費查詢服務暫時無法回應。':'')+(data.googleFeatureId?' Google Maps 地點識別碼已讀取，但它不是座標，不能直接用來放圖釘。':'')+' 已嘗試 '+(data.diagnostics?.queriesAttempted||0)+' 次 OpenStreetMap 查詢；其他來源查詢 '+(data.diagnostics?.photonAttempts?.length||0)+' 次。已排除 '+(data.diagnostics?.rejectedCount||0)+' 筆不符合地址的候選地點。<details style="margin-top:10px"><summary>查看定位診斷（可截圖回報）</summary><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">'+esc(JSON.stringify(data.diagnostics||{},null,2))+'</pre></details>';
   }
+  if(data.googleCoordinateSuggestion)showGoogleCoordinateSuggestion(data.googleCoordinateSuggestion,'editPlaceResults','editLat','editLng');
  }catch(e){box.textContent='自動查詢失敗：'+e.message+'。請確認已部署 Netlify Functions，而非只有靜態 HTML。'}
 }
 function selectEditPlace(i){

@@ -6,11 +6,15 @@ function parsePlace(raw){
  let name='';const m=path.match(/\/place\/([^/]+)/);
  if(m){try{name=decodeURIComponent(m[1].replace(/\+/g,' '))}catch{name=m[1]}}
  if(!name)name=u.searchParams.get('query')||u.searchParams.get('q')||'';
- let lat=null,lng=null;
- const coords=raw.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/)||raw.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
- if(coords){lat=Number(coords[1]);lng=Number(coords[2]);if(Math.abs(lat)>90||Math.abs(lng)>180){lat=null;lng=null}}
- // The place path often contains a business name, not a verified postal address.
- return {name:name.slice(0,180),address:'',lat:null,lng:null,unverifiedMapCoordinates:lat!==null&&lng!==null};
+ // !3d/!4d are often a place's map coordinates, but may be a map viewport.
+ // Only present them for explicit user confirmation; never claim verified.
+ const embedded=raw.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+ const query=(u.searchParams.get('query')||u.searchParams.get('q')||'').match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+ const coord=embedded||query;
+ let suggestedCoordinates=null;
+ if(coord){const lat=Number(coord[1]),lng=Number(coord[2]);if(lat>=21&&lat<=26&&lng>=119&&lng<=123)suggestedCoordinates={lat,lng,source:embedded?'google-map-embedded':'google-map-query',verified:false}}
+ const viewport=raw.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+ return {name:name.slice(0,180),address:'',lat:null,lng:null,suggestedCoordinates,unverifiedMapCoordinates:!!suggestedCoordinates||!!viewport,featureId:u.searchParams.get('ftid')||null};
 }
 exports.handler=async(event)=>{
  try{
