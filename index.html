@@ -83,7 +83,7 @@ async function autoLocateSavedRestaurant(id){
   const target=db.restaurants.find(x=>x.id===id);
   if(!target||Number.isFinite(target.lat)&&Number.isFinite(target.lng))return;
   target.lat=Number(data.place.lat);target.lng=Number(data.place.lng);
-  save();renderList();renderMarkers();toast('已透過公開地圖比對並補上餐廳圖釘');
+  save();renderList();renderMarkers();toast('已取得可信定位並補上餐廳圖釘');
  }catch(e){console.warn('免費地點查詢未成功',e)}
 }
 function saveLinkedRestaurant(e){e.preventDefault();let f=new FormData(e.target),name=f.get('name').trim(),address=f.get('address').trim(),m=f.get('map');let duplicate=db.restaurants.find(r=>r.map===m&&r.name.trim().toLowerCase()===name.toLowerCase());if(duplicate){if(confirm(`「${name}」已在此地圖。要把網址加入既有餐廳，而不是建立重複餐廳嗎？`)){attachIncoming(duplicate.id)}return}let lat=f.get('lat'),lng=f.get('lng');let r={id:uid(),name,cuisine:f.get('cuisine').trim(),address,lat:lat?Number(lat):null,lng:lng?Number(lng):null,map:m,note:f.get('note').trim(),sources:[{id:uid(),author:'我',platform:incomingPlatform,url:incomingUrl,note:f.get('sourceNote').trim(),broken:false,added:now()}]};db.restaurants.push(r);save();closeModal();switchMap(m);showRestaurant(r.id);toast(lat&&lng?'餐廳與推薦來源已儲存':'已儲存餐廳，正在嘗試免費自動定位');autoLocateSavedRestaurant(r.id)}

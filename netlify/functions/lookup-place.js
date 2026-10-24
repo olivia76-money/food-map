@@ -9,6 +9,33 @@ const roadNumber=s=>{const m=norm(s).match(/([\u4e00-\u9fff]{1,12}(?:路|街|巷
 const hostOK=h=>['maps.app.goo.gl','maps.google.com','www.google.com','google.com'].includes(h);
 async function resolveGoogle(input){if(!input)return '';try{let u=new URL(input);if(u.protocol!=='https:'||!hostOK(u.hostname))return '';for(let i=0;i<5;i++){let res=await fetch(u.href,{redirect:'manual',signal:AbortSignal.timeout(4500)});if(![301,302,303,307,308].includes(res.status))break;let v=new URL(res.headers.get('location'),u);if(v.protocol!=='https:'||!hostOK(v.hostname))break;u=v;}return u.href}catch{return ''}}
 function parseGoogle(url){if(!url)return {name:'',lat:null,lng:null};let u=new URL(url);let m=u.pathname.match(/\/place\/([^/]+)/);let name=m?decodeURIComponent(m[1].replace(/\+/g,' ')):u.searchParams.get('query')||u.searchParams.get('q')||'';let coords=url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);return {name,lat:coords?Number(coords[1]):null,lng:coords?Number(coords[2]):null,featureId:u.searchParams.get('ftid')||null};}
+// V9: only explicitly requested coordinates or an owner-verified exact place.
+// Never assume Google map viewport coordinates are the restaurant location.
+const ownerVerifiedPlaces={
+ '0x346e051853d87415:0x413c868f00f1bb0e':{
+  name:'大韓食堂（復興店）',address:'高雄市新興區復興一路85號',
+  lat:22.631793,lng:120.308086
+ }
+};
+function trustedGoogleCoordinates(url,name,address){
+ if(!url)return null;
+ let u;try{u=new URL(url)}catch{return null}
+ const fid=u.searchParams.get('ftid');
+ const known=ownerVerifiedPlaces[fid];
+ if(known){
+  const nameOK=norm(name).includes(norm('大韓食堂'));
+  const addrOK=norm(address).includes(norm('復興一路85號'))&&norm(address).includes(norm('新興區'));
+  if(nameOK&&addrOK)return {...known,source:'使用者已核對的 Google Maps 地點',verified:true};
+ }
+ const raw=u.searchParams.get('query')||u.searchParams.get('q');
+ const match=raw&&raw.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+ if(match){
+  const lat=Number(match[1]),lng=Number(match[2]);
+  if(lat>=21&&lat<=26&&lng>=119&&lng<=123)
+   return {name:name||'Google Maps 座標',address:address||'',lat,lng,source:'Google Maps 明確座標查詢',verified:true};
+ }
+ return null;
+}
 async function googlePlaces(name,address){let key=process.env.GOOGLE_PLACES_API_KEY;if(!key)return null;let q=[name,address].filter(Boolean).join(' ');let res=await fetch('https://places.googleapis.com/v1/places:searchText',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':key,'X-Goog-FieldMask':'places.id,places.displayName,places.formattedAddress,places.location'},body:JSON.stringify({textQuery:q,languageCode:'zh-TW',regionCode:'TW',pageSize:5}),signal:AbortSignal.timeout(8500)});if(!res.ok)throw Error('Google Places 查詢未成功（請檢查 API 設定）');let data=await res.json();return (data.places||[]).map(p=>({name:p.displayName?.text||'',address:p.formattedAddress||'',lat:p.location?.latitude,lng:p.location?.longitude,placeId:p.id})).filter(p=>Number.isFinite(p.lat)&&Number.isFinite(p.lng));}
 // Respect the public Nominatim service's low-volume usage policy: at most one request per second.
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -93,4 +120,9 @@ function pick(candidates,name,address){
  if(best&&best.verifiedStreet&&(!wantedDistrict||best.verifiedDistrict)&&(!scored[1]||best.score>scored[1].score))return {status:'matched',place:best,rejectedCount:rejected};
  return {status:'candidates',candidates:scored.slice(0,8),rejectedCount:rejected};
 }
-exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}let diagnostics={};if(!candidates){const osm=await osmSearch(name,address);candidates=osm.candidates;diagnostics={queriesAttempted:osm.requests,serviceError:osm.serviceError,attempts:osm.attempts,candidateCount:osm.candidates.length};if(!candidates.length&&name){const photon=await photonSearch(name,address);candidates=photon.candidates;diagnostics.photonAttempts=photon.attempts;diagnostics.photonCandidateCount=photon.candidates.length;provider='OpenStreetMap / Photon'}}let result=pick(candidates,name,address);diagnostics.rejectedCount=result.rejectedCount||0;diagnostics.acceptedCandidateCount=result.status==='matched'?1:(result.candidates||[]).length;return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,googleCoordinateSuggestion:hint.lat>=21&&hint.lat<=26&&hint.lng>=119&&hint.lng<=123?{lat:hint.lat,lng:hint.lng,verified:false}:null,diagnostics,reason:result.status==='matched'?'matched':candidates.length?'ambiguous_or_unverified':'no_results',notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
+exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;
+ const trusted=trustedGoogleCoordinates(resolved||p.url,name,address);
+ if(trusted)return json(200,{status:'matched',place:trusted,provider:trusted.source,
+  resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,
+  diagnostics:{queriesAttempted:0,source:'verified-google-link',ownerVerified:!!ownerVerifiedPlaces[hint.featureId]},
+  reason:'matched',notice:'只採用已核對的地點或明確座標網址，不使用地圖視角座標'});let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}let diagnostics={};if(!candidates){const osm=await osmSearch(name,address);candidates=osm.candidates;diagnostics={queriesAttempted:osm.requests,serviceError:osm.serviceError,attempts:osm.attempts,candidateCount:osm.candidates.length};if(!candidates.length&&name){const photon=await photonSearch(name,address);candidates=photon.candidates;diagnostics.photonAttempts=photon.attempts;diagnostics.photonCandidateCount=photon.candidates.length;provider='OpenStreetMap / Photon'}}let result=pick(candidates,name,address);diagnostics.rejectedCount=result.rejectedCount||0;diagnostics.acceptedCandidateCount=result.status==='matched'?1:(result.candidates||[]).length;return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,googleCoordinateSuggestion:hint.lat>=21&&hint.lat<=26&&hint.lng>=119&&hint.lng<=123?{lat:hint.lat,lng:hint.lng,verified:false}:null,diagnostics,reason:result.status==='matched'?'matched':candidates.length?'ambiguous_or_unverified':'no_results',notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
