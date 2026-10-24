@@ -23,19 +23,19 @@ async function osmSearch(name,address){
  if(plain)queries.push(plain.replace(/^(高雄市|台北市|臺北市|台中市|臺中市|新北市)/,'$1 '));
  if(street){queries.push(street.street+street.number+'號 高雄市');queries.push(street.street+' '+street.number+' 高雄');}
  if(name)queries.push(name+' '+(address.match(/.{2,3}[縣市].{1,8}區/)||[''])[0]);
- const candidates=[];let requests=0;let serviceError=false;
+ const candidates=[];let requests=0;let serviceError=false;const attempts=[];
  for(const q of [...new Set(queries.filter(Boolean))].slice(0,5)){
   if(requests)await sleep(1150);requests++;
   try{
    const url='https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=8&countrycodes=tw&accept-language=zh-TW&q='+encodeURIComponent(q);
    const res=await fetch(url,{headers:{'User-Agent':'FoodMapPersonal/3.0 (personal restaurant map; Netlify Functions)','Accept':'application/json'},signal:AbortSignal.timeout(8000)});
-   if(!res.ok){serviceError=true;continue}
-   const arr=await res.json();
+   if(!res.ok){serviceError=true;attempts.push({query:q,httpStatus:res.status,count:0});continue}
+   const arr=await res.json();attempts.push({query:q,httpStatus:res.status,count:arr.length});
    for(const p of arr){const lat=Number(p.lat),lng=Number(p.lon);if(Number.isFinite(lat)&&Number.isFinite(lng)&&!candidates.some(x=>x.lat===lat&&x.lng===lng))candidates.push({name:p.name||p.display_name?.split(',')[0]||'',address:p.display_name||'',lat,lng,osmType:p.type||'',osmClass:p.class||''})}
    if(candidates.some(p=>norm(p.address).includes(norm(street?.street||'')+street?.number)))break;
-  }catch{serviceError=true}
+  }catch(e){serviceError=true;attempts.push({query:q,error:e?.name==='TimeoutError'?'timeout':'network_error',count:0})}
  }
- return {candidates,requests,serviceError};
+ return {candidates,requests,serviceError,attempts};
 }
 function pick(candidates,name,address){
  const n=norm(name),a=norm(address),street=streetNumber(address);
@@ -54,4 +54,4 @@ function pick(candidates,name,address){
  if(best&&(best.verifiedStreet||best.score>=12)&&(!scored[1]||best.score>scored[1].score))return {status:'matched',place:best};
  return {status:'candidates',candidates:scored.slice(0,8)};
 }
-exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}let diagnostics={};if(!candidates){const osm=await osmSearch(name,address);candidates=osm.candidates;diagnostics={queriesAttempted:osm.requests,serviceError:osm.serviceError}}let result=pick(candidates,name,address);return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,diagnostics,reason:result.status==='matched'?'matched':candidates.length?'ambiguous_or_unverified':'no_results',notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
+exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}let diagnostics={};if(!candidates){const osm=await osmSearch(name,address);candidates=osm.candidates;diagnostics={queriesAttempted:osm.requests,serviceError:osm.serviceError,attempts:osm.attempts,candidateCount:osm.candidates.length}}let result=pick(candidates,name,address);return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,diagnostics,reason:result.status==='matched'?'matched':candidates.length?'ambiguous_or_unverified':'no_results',notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
