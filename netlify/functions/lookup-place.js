@@ -27,6 +27,18 @@ function trustedGoogleCoordinates(url,name,address){
   const addrOK=norm(address).includes(norm('復興一路85號'))&&norm(address).includes(norm('新興區'));
   if(nameOK&&addrOK)return {...known,source:'使用者已核對的 Google Maps 地點',verified:true};
  }
+ // Google Maps /maps/place/ data contains the place's own coordinates.
+ // Do not confuse them with the /@lat,lng map viewport center.
+ if(/^\/maps\/place\//.test(u.pathname)){
+  const placePath=u.pathname.split('/place/')[1]?.split('/')[0]||'';
+  const placeName=decodeURIComponent(placePath.replace(/\+/g,' '));
+  const match=u.pathname.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+  if(match){
+   const lat=Number(match[1]),lng=Number(match[2]);
+   if(lat>=-90&&lat<=90&&lng>=-180&&lng<=180)
+    return {name:name||placeName,address:address||'',lat,lng,source:'Google Maps 餐廳專屬座標',verified:true};
+  }
+ }
  const raw=u.searchParams.get('query')||u.searchParams.get('q');
  const match=raw&&raw.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
  if(match){
