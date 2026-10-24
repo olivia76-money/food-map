@@ -166,7 +166,7 @@ async function searchEditPlace(id){
   if(window.editPlaceCandidates.length){
    box.innerHTML='<b>找到多個可能地點，請選擇正確餐廳：</b>'+window.editPlaceCandidates.map((p,i)=>`<button type="button" class="soft" style="display:block;width:100%;text-align:left;margin:6px 0" onclick="selectEditPlace(${i})">${esc(p.display_name)}</button>`).join('');
   }else{
-   box.innerHTML='無法可靠確認位置。<b>不會使用猜測座標</b>。如有原始 Google Maps 地點連結，請在推薦來源加入後再試；免費公開地圖資料暫時無法核實此位置；可稍後再試或提供更完整的原始 Google Maps 地點連結。';
+   box.innerHTML='無法可靠確認位置，<b>不會使用猜測座標</b>。'+(data.reason==='no_results'?'公開地圖查無此門牌或店名。':'找到的資料不足以核對完整門牌。')+(data.diagnostics?.serviceError?' 部分免費查詢服務暫時無法回應。':'')+' 已嘗試 '+(data.diagnostics?.queriesAttempted||0)+' 種免費查詢；可稍後重試。';
   }
  }catch(e){box.textContent='自動查詢失敗：'+e.message+'。請確認已部署 Netlify Functions，而非只有靜態 HTML。'}
 }
