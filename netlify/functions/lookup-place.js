@@ -1,6 +1,10 @@
 const json=(code,data)=>({statusCode:code,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'},body:JSON.stringify(data)});
 const clean=s=>String(s||'').trim().slice(0,200);
 const norm=s=>clean(s).replace(/[\s,，、·（）()]/g,'').replace(/(?:[\u4e00-\u9fff]{1,8}[里村])(?=[\u4e00-\u9fff]{1,16}(?:路|街|大道))/g,'').replace(/臺/g,'台').toLowerCase();
+const districtOf=s=>{const m=clean(s).replace(/臺/g,'台').match(/([\u4e00-\u9fff]{1,6}(?:區|鄉|鎮))/);return m?m[1]:''};
+const cityOf=s=>{const m=clean(s).replace(/臺/g,'台').match(/([\u4e00-\u9fff]{2,4}[縣市])/);return m?m[1]:''};
+const districtEnglish={"Xinxing":"新興區","Sinsing":"新興區","Lingya":"苓雅區","Cianjin":"前金區","Qianjin":"前金區","Yancheng":"鹽埕區","Gushan":"鼓山區","Zuoying":"左營區","Sanmin":"三民區","Nanzi":"楠梓區","Nanzih":"楠梓區","Qianzhen":"前鎮區","Cianjhen":"前鎮區","Xiaogang":"小港區","Fengshan":"鳳山區","Niaosong":"鳥松區","Renwu":"仁武區","Daliao":"大寮區","Luzhu":"路竹區","Taoyuan":"桃源區","Liouguei":"六龜區","Liugui":"六龜區","Yongan":"永安區","Yong'an":"永安區","Gangshan":"岡山區","Qiaotou":"橋頭區","Dashe":"大社區","Linyuan":"林園區","Dagang":"大樹區","Daliao":"大寮區"};
+function translatedDistrict(v){if(!v)return '';for(const [en,zh] of Object.entries(districtEnglish))if(new RegExp('^'+en+'(?: District)?$','i').test(v.trim()))return zh;return /[\u4e00-\u9fff]/.test(v)?v:''}
 const roadNumber=s=>{const m=norm(s).match(/([\u4e00-\u9fff]{1,12}(?:路|街|巷))([0-9]+)號/);return m?m[1]+m[2]:null};
 const hostOK=h=>['maps.app.goo.gl','maps.google.com','www.google.com','google.com'].includes(h);
 async function resolveGoogle(input){if(!input)return '';try{let u=new URL(input);if(u.protocol!=='https:'||!hostOK(u.hostname))return '';for(let i=0;i<5;i++){let res=await fetch(u.href,{redirect:'manual',signal:AbortSignal.timeout(4500)});if(![301,302,303,307,308].includes(res.status))break;let v=new URL(res.headers.get('location'),u);if(v.protocol!=='https:'||!hostOK(v.hostname))break;u=v;}return u.href}catch{return ''}}
@@ -52,27 +56,41 @@ async function photonSearch(name,address){
    for(const f of features){const a=f.properties||{},co=f.geometry?.coordinates||[];const lat=Number(co[1]),lng=Number(co[0]);
     if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat<21||lat>26||lng<119||lng>123)continue;
     const adr=[a.housenumber&&a.street?a.street+' '+a.housenumber:[a.street,a.housenumber].filter(Boolean).join(' '),a.district,a.city,a.state,a.country].filter(Boolean).join(', ');
-    if(!candidates.some(x=>x.lat===lat&&x.lng===lng))candidates.push({name:a.name||'',address:adr,lat,lng,osmType:a.type||'',osmClass:a.osm_key||'',source:'Photon'});
+    const district=translatedDistrict(a.district)||translatedDistrict(a.city)||translatedDistrict(a.county);
+    const city=/kaohsiung/i.test([a.city,a.state].join(' '))?'高雄市':(/[\u4e00-\u9fff]/.test(a.state||'')?a.state:'');
+    const display=[city,district,[a.street,a.housenumber].filter(Boolean).join(' '),a.name].filter(Boolean).join(' ');
+    if(!candidates.some(x=>x.lat===lat&&x.lng===lng))candidates.push({name:a.name||'',address:adr,displayAddress:display||adr,lat,lng,osmType:a.type||'',osmClass:a.osm_key||'',source:'Photon',district,city,street:a.street||'',houseNumber:String(a.housenumber||'')});
    }
   }catch(e){attempts.push({query:q,error:e?.name==='TimeoutError'?'timeout':'network_error',count:0})}
  }
  return {attempts,candidates};
 }
 function pick(candidates,name,address){
- const n=norm(name),a=norm(address),street=streetNumber(address);
+ const n=norm(name),a=norm(address),street=streetNumber(address),wantedDistrict=districtOf(address),wantedCity=cityOf(address);
+ const seen=new Set();let rejected=0;
  const scored=candidates.map(p=>{
-  const pn=norm(p.name),pa=norm(p.address);
+  const pn=norm(p.name),pa=norm(p.address),pd=norm(p.district||'');
   const exactName=!!n&&!!pn&&(pn.includes(n)||n.includes(pn));
-  const streetMatch=!!street&&pa.includes(norm(street.street));
-  const numberMatch=!!street&&new RegExp('(?:^|[^0-9])'+street.number+'(?:號|,|$)').test(pa);
+  const streetMatch=!!street&&(pa.includes(norm(street.street))||norm(p.street||'').includes(norm(street.street)));
+  const numberMatch=!!street&&(String(p.houseNumber||'')===street.number||new RegExp('(?:^|[^0-9])'+street.number+'(?:號|,|$)').test(pa));
   const fullAddress=!!a&&pa.includes(a);
-  const score=(exactName?6:0)+(streetMatch?2:0)+(numberMatch?5:0)+(fullAddress?6:0);
-  return {...p,score,verifiedStreet:streetMatch&&numberMatch};
- }).sort((x,y)=>y.score-x.score);
+  const districtMatch=!!wantedDistrict&&(pd===norm(wantedDistrict)||pa.includes(norm(wantedDistrict)));
+  const cityMatch=!!wantedCity&&(norm(p.city||'')===norm(wantedCity)||pa.includes(norm(wantedCity))||/kaohsiung/i.test(pa)&&wantedCity==='高雄市');
+  const otherDistrict=Object.values(districtEnglish).some(d=>d!==wantedDistrict&&(pd===norm(d)||(!pd&&pa.includes(norm(d)))));
+  const wrongDistrict=!!wantedDistrict&&(otherDistrict||pd&&pd!==norm(wantedDistrict));
+  const wrongCity=!!wantedCity&&p.city&&norm(p.city)!==norm(wantedCity);
+  if(wrongDistrict||wrongCity){rejected++;return null}
+  // Do not offer generic administrative-area centroids as restaurant pins.
+  // Require both street+house number, or the restaurant name and matching district.
+  if(!(streetMatch&&numberMatch)&&!(exactName&&districtMatch)){rejected++;return null}
+  const key=String(p.lat.toFixed(5))+','+String(p.lng.toFixed(5));
+  if(seen.has(key)){rejected++;return null}seen.add(key);
+  const score=(exactName?6:0)+(streetMatch?2:0)+(numberMatch?5:0)+(fullAddress?6:0)+(districtMatch?3:0)+(cityMatch?1:0);
+  return {...p,score,verifiedStreet:streetMatch&&numberMatch,verifiedDistrict:districtMatch};
+ }).filter(Boolean).sort((x,y)=>y.score-x.score);
  const best=scored[0];
- // A matching street AND house number, or matching full address, is required.
- // Matching the business name alone is not enough to assert a precise pin.
- if(best&&(best.verifiedStreet||best.score>=12)&&(!scored[1]||best.score>scored[1].score))return {status:'matched',place:best};
- return {status:'candidates',candidates:scored.slice(0,8)};
+ // Only an unambiguous exact street+house number can be saved automatically.
+ if(best&&best.verifiedStreet&&(!wantedDistrict||best.verifiedDistrict)&&(!scored[1]||best.score>scored[1].score))return {status:'matched',place:best,rejectedCount:rejected};
+ return {status:'candidates',candidates:scored.slice(0,8),rejectedCount:rejected};
 }
-exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}let diagnostics={};if(!candidates){const osm=await osmSearch(name,address);candidates=osm.candidates;diagnostics={queriesAttempted:osm.requests,serviceError:osm.serviceError,attempts:osm.attempts,candidateCount:osm.candidates.length};if(!candidates.length&&name){const photon=await photonSearch(name,address);candidates=photon.candidates;diagnostics.photonAttempts=photon.attempts;diagnostics.photonCandidateCount=photon.candidates.length;provider='OpenStreetMap / Photon'}}let result=pick(candidates,name,address);return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,diagnostics,reason:result.status==='matched'?'matched':candidates.length?'ambiguous_or_unverified':'no_results',notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
+exports.handler=async event=>{try{let p=event.queryStringParameters||{};let name=clean(p.name),address=clean(p.address);if(!name&&!address)return json(400,{error:'缺少餐廳名稱或地址'});let resolved=await resolveGoogle(p.url);let hint=parseGoogle(resolved);if(!name)name=hint.name;let candidates=null,provider='OpenStreetMap';try{candidates=await googlePlaces(name,address);if(candidates)provider='Google Places'}catch(e){return json(502,{error:e.message})}let diagnostics={};if(!candidates){const osm=await osmSearch(name,address);candidates=osm.candidates;diagnostics={queriesAttempted:osm.requests,serviceError:osm.serviceError,attempts:osm.attempts,candidateCount:osm.candidates.length};if(!candidates.length&&name){const photon=await photonSearch(name,address);candidates=photon.candidates;diagnostics.photonAttempts=photon.attempts;diagnostics.photonCandidateCount=photon.candidates.length;provider='OpenStreetMap / Photon'}}let result=pick(candidates,name,address);diagnostics.rejectedCount=result.rejectedCount||0;diagnostics.acceptedCandidateCount=result.status==='matched'?1:(result.candidates||[]).length;return json(200,{...result,provider,resolvedGoogleUrl:resolved||null,googleFeatureId:hint.featureId||null,diagnostics,reason:result.status==='matched'?'matched':candidates.length?'ambiguous_or_unverified':'no_results',notice:'未驗證的地圖視角座標不會自動採用'})}catch(e){return json(502,{error:'地點查詢服務暫時無法使用'})}};
